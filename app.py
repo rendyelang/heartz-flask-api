@@ -24,20 +24,16 @@ class MelSpectrogramLayer(tf.keras.layers.Layer):
         self.upper_freq = upper_freq
 
     def call(self, audio):
-        # 1. Hitung STFT
         stfts = tf.signal.stft(audio, frame_length=self.frame_length, frame_step=self.frame_step, fft_length=self.frame_length)
         spectrograms = tf.abs(stfts)
         
-        # 2. Buat Mel Weights Matrix
         num_spectrogram_bins = stfts.shape[-1]
         linear_to_mel_weight_matrix = tf.signal.linear_to_mel_weight_matrix(
             self.num_mel_bins, num_spectrogram_bins, self.sample_rate, self.lower_freq, self.upper_freq)
         
-        # 3. Ubah ke Mel Scale
         mel_spectrograms = tf.tensordot(spectrograms, linear_to_mel_weight_matrix, 1)
         mel_spectrograms.set_shape(spectrograms.shape[:-1].concatenate(linear_to_mel_weight_matrix.shape[-1:]))
         
-        # 4. Ubah ke Decibel (Log) & Tambah dimensi Channel untuk CNN
         mel_spectrograms = tf.math.log(mel_spectrograms + 1e-6)
         return tf.expand_dims(mel_spectrograms, -1)
 
@@ -63,7 +59,8 @@ CORS(app)
 # Konfigurasi Gemini API
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
-llm_model = genai.GenerativeModel('gemini-1.5-flash')
+
+llm_model = genai.GenerativeModel('gemini-3.5-flash')
 
 # Load Model AI dengan mengenalkan Custom Layer-nya
 print("Memuat model Heartz...")
@@ -80,6 +77,13 @@ with open("labels.txt", "r") as f:
 # ==============================================================================
 # ENDPOINT API
 # ==============================================================================
+
+# 1. Endpoint Base (Welcome Message)
+@app.route('/', methods=['GET'])
+def index():
+    return jsonify({"message": "Welcome to Heartz ML API"}), 200
+
+# 2. Endpoint Prediksi
 @app.route('/predict', methods=['POST'])
 def predict_audio():
     if 'audio' not in request.files:
@@ -89,24 +93,18 @@ def predict_audio():
     temp_path = "temp_inference.wav"
     
     try:
-        # A. Simpan file fisik sementara agar bisa dibaca fungsi librosa.load lu
         file.save(temp_path)
-        
-        # B. Gunakan fungsi dari tim DS lu (menerima path, mengembalikan batch_tensor)
         audio_batch, _ = clean_audio_for_inference(temp_path)
         
-        # C. Prediksi langsung (karena dimensi udah diurus tf.expand_dims di preprocessing)
         predictions = model.predict(audio_batch)[0]
-        predicted_index = int(np.argmax(predictions)) # Convert ke INT asli Python
+        predicted_index = int(np.argmax(predictions))
         predicted_label = class_names[predicted_index]
-        confidence = float(predictions[predicted_index]) # Convert ke Float asli Python
+        confidence = float(predictions[predicted_index])
         
-        # D. Panggil Generative AI untuk Motivasi
         prompt = f"Seorang teman Tuli baru saja berlatih melafalkan suku kata '{predicted_label}' dengan tingkat akurasi {confidence * 100:.1f}%. Berikan satu kalimat singkat, ramah, dan memotivasi untuk menyemangatinya."
         response = llm_model.generate_content(prompt)
         motivation_text = response.text
         
-        # E. Hapus file audio sementara agar server tidak kepenuhan sampah
         if os.path.exists(temp_path):
             os.remove(temp_path)
             
@@ -118,12 +116,10 @@ def predict_audio():
         }), 200
         
     except Exception as e:
-        # Hapus file jika terjadi error di tengah jalan
         if os.path.exists(temp_path):
             os.remove(temp_path)
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    # Membaca port bawaan GCP Cloud Run, default ke 8080 kalau dijalankan lokal
     port = int(os.environ.get('PORT', 8080))
     app.run(debug=False, host='0.0.0.0', port=port)
