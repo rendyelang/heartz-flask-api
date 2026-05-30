@@ -1,5 +1,7 @@
 import os
+import asyncio
 import numpy as np
+import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import tensorflow as tf
@@ -62,6 +64,9 @@ genai.configure(api_key=GEMINI_API_KEY)
 
 llm_model = genai.GenerativeModel('gemini-3.5-flash')
 
+# Konfigurasi Local VM (Ollama) — prioritas utama
+LOCAL_VM_URL = os.getenv("LOCAL_VM_URL")
+
 # Load Model AI dengan mengenalkan Custom Layer-nya
 print("Memuat model Heartz...")
 model = tf.keras.models.load_model(
@@ -73,6 +78,96 @@ print("Model berhasil dimuat!")
 # Load Daftar Label
 with open("labels.txt", "r") as f:
     class_names = [line.strip() for line in f.readlines()]
+
+
+# ==============================================================================
+# FUNGSI ASYNC: generate_motivation (System Rules — Fallback Logic)
+# ==============================================================================
+# Urutan: LOCAL_VM_URL (Ollama, timeout 5s) ──> GEMINI_API_KEY (cloud fallback)
+# ==============================================================================
+async def generate_motivation(hasil_latihan: dict) -> str:
+    """
+    Membangkitkan kata-kata semangat berdasarkan hasil latihan suara user.
+
+    Fallback Logic (sesuai System Rules):
+        1. Tembak LOCAL_VM_URL (Ollama di GCE VM) dengan timeout 5 detik.
+        2. Jika timeout / error apapun  →  fallback ke Gemini API (cloud).
+
+    Args:
+        hasil_latihan: dict berisi minimal:
+            - "predicted_label" (str): suku kata yang diprediksi, misal "ba"
+            - "confidence" (float): tingkat akurasi 0.0 – 1.0
+
+    Returns:
+        str: satu kalimat motivasi yang ramah untuk user.
+    """
+
+    predicted_label = hasil_latihan["predicted_label"]
+    confidence = hasil_latihan["confidence"]
+
+    prompt = (
+        f"Seorang teman Tuli baru saja berlatih melafalkan suku kata "
+        f"'{predicted_label}' dengan tingkat akurasi {confidence * 100:.1f}%. "
+        f"Berikan satu kalimat singkat, ramah, dan memotivasi untuk "
+        f"menyemangatinya."
+    )
+
+    # ------------------------------------------------------------------
+    # LANGKAH 1 — Coba LOCAL_VM_URL (Ollama) dengan timeout 5 detik
+    # ------------------------------------------------------------------
+    if LOCAL_VM_URL:
+        try:
+            # requests.post bersifat blocking, jalankan di thread pool
+            # agar tidak memblokir event loop asyncio.
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,  # default ThreadPoolExecutor
+                lambda: requests.post(
+                    LOCAL_VM_URL,
+                    json={
+                        "model": "gemma3:4b",
+                        "prompt": prompt,
+                        "stream": False,
+                    },
+                    timeout=5,  # batas 5 detik sesuai System Rules
+                ),
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            # Ollama mengembalikan field "response" untuk non-streaming
+            motivation_text = data.get("response", "").strip()
+            if motivation_text:
+                print("[Motivation] Sumber: LOCAL_VM (Ollama)")
+                return motivation_text
+
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as net_err:
+            print(f"[Motivation] Local VM timeout/koneksi gagal: {net_err}")
+        except Exception as e:
+            print(f"[Motivation] Local VM error tak terduga: {e}")
+
+    # ------------------------------------------------------------------
+    # LANGKAH 2 — Fallback ke Gemini API (cloud)
+    # ------------------------------------------------------------------
+    try:
+        # genai bersifat blocking; jalankan di thread pool juga
+        loop = asyncio.get_event_loop()
+        gemini_response = await loop.run_in_executor(
+            None,
+            lambda: llm_model.generate_content(prompt),
+        )
+        motivation_text = gemini_response.text.strip()
+        print("[Motivation] Sumber: GEMINI API (cloud fallback)")
+        return motivation_text
+
+    except Exception as e:
+        print(f"[Motivation] Gemini API juga gagal: {e}")
+        # Fallback statis terakhir agar user tidak mendapat respons kosong
+        return (
+            f"Hebat! Kamu sudah berani berlatih mengucapkan '{predicted_label}'. "
+            f"Terus semangat, ya!"
+        )
+
 
 # ==============================================================================
 # ENDPOINT API
@@ -100,10 +195,13 @@ def predict_audio():
         predicted_index = int(np.argmax(predictions))
         predicted_label = class_names[predicted_index]
         confidence = float(predictions[predicted_index])
-        
-        prompt = f"Seorang teman Tuli baru saja berlatih melafalkan suku kata '{predicted_label}' dengan tingkat akurasi {confidence * 100:.1f}%. Berikan satu kalimat singkat, ramah, dan memotivasi untuk menyemangatinya."
-        response = llm_model.generate_content(prompt)
-        motivation_text = response.text
+
+        # Panggil fungsi async generate_motivation (fallback: VM → Gemini)
+        hasil_latihan = {
+            "predicted_label": predicted_label,
+            "confidence": confidence,
+        }
+        motivation_text = asyncio.run(generate_motivation(hasil_latihan))
         
         if os.path.exists(temp_path):
             os.remove(temp_path)
