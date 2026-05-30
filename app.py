@@ -180,7 +180,8 @@ def index():
 
 # 2. Endpoint Prediksi
 @app.route('/predict', methods=['POST'])
-def predict_audio():
+@app.route('/predict', methods=['POST'])
+async def predict_audio(): 
     if 'audio' not in request.files:
         return jsonify({"error": "File audio tidak ditemukan"}), 400
         
@@ -196,12 +197,12 @@ def predict_audio():
         predicted_label = class_names[predicted_index]
         confidence = float(predictions[predicted_index])
 
-        # Panggil fungsi async generate_motivation (fallback: VM → Gemini)
         hasil_latihan = {
             "predicted_label": predicted_label,
             "confidence": confidence,
         }
-        motivation_text = asyncio.run(generate_motivation(hasil_latihan))
+        
+        motivation_text = await generate_motivation(hasil_latihan) 
         
         if os.path.exists(temp_path):
             os.remove(temp_path)
