@@ -69,7 +69,7 @@ if os.getenv("GEMINI_API_KEY"):
     API_PROVIDERS.append({
         "name": "gemini_native",
         "type": "google_genai",
-        "instance": genai.GenerativeModel('gemini-3.5-flash')
+        "instance": genai.GenerativeModel('gemini-1.5-flash')
     })
 
 # 2. OpenRouter Grok
@@ -96,7 +96,7 @@ if os.getenv("OPENROUTER_API_KEY"):
         "name": "openrouter_default",
         "type": "openrouter",
         "key": os.getenv("OPENROUTER_API_KEY"),
-        "model": "google/gemini-flash-1.5"
+        "model": "google/gemini-1.5-flash"
     })
 
 # Load Model AI dengan mengenalkan Custom Layer-nya
@@ -155,43 +155,50 @@ async def generate_motivation(hasil_latihan: dict) -> tuple:
     if not API_PROVIDERS:
         print("[Motivation] Tidak ada API Provider yang dikonfigurasi di .env!")
     else:
-        # Pilih provider acak
-        provider = random.choice(API_PROVIDERS)
-        provider_name = provider["name"]
-        print(f"[Motivation] Mencoba generate dengan provider: {provider_name}")
+        # Acak urutan provider agar beban terdistribusi
+        providers_to_try = list(API_PROVIDERS)
+        random.shuffle(providers_to_try)
+        
+        for provider in providers_to_try:
+            provider_name = provider["name"]
+            print(f"[Motivation] Mencoba generate dengan provider: {provider_name}")
 
-        try:
-            loop = asyncio.get_event_loop()
+            try:
+                loop = asyncio.get_event_loop()
 
-            if provider["type"] == "google_genai":
-                llm = provider["instance"]
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: llm.generate_content(prompt),
-                )
-                return response.text.strip(), provider_name
-
-            elif provider["type"] == "openrouter":
-                def call_openrouter():
-                    return requests.post(
-                        "https://openrouter.ai/api/v1/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {provider['key']}",
-                        },
-                        json={
-                            "model": provider["model"],
-                            "messages": [{"role": "user", "content": prompt}]
-                        },
-                        timeout=15
+                if provider["type"] == "google_genai":
+                    llm = provider["instance"]
+                    response = await loop.run_in_executor(
+                        None,
+                        lambda p=provider: p["instance"].generate_content(prompt),
                     )
-                response = await loop.run_in_executor(None, call_openrouter)
-                response.raise_for_status()
-                data = response.json()
-                motivation_text = data["choices"][0]["message"]["content"].strip()
-                return motivation_text, provider_name
+                    return response.text.strip(), provider_name
 
-        except Exception as e:
-            print(f"[Motivation] Provider {provider_name} gagal: {e}")
+                elif provider["type"] == "openrouter":
+                    def call_openrouter(p=provider):
+                        return requests.post(
+                            "https://openrouter.ai/api/v1/chat/completions",
+                            headers={
+                                "Authorization": f"Bearer {p['key']}",
+                            },
+                            json={
+                                "model": p["model"],
+                                "messages": [{"role": "user", "content": prompt}]
+                            },
+                            timeout=15
+                        )
+                    response = await loop.run_in_executor(None, call_openrouter)
+                    response.raise_for_status()
+                    data = response.json()
+                    motivation_text = data["choices"][0]["message"]["content"].strip()
+                    return motivation_text, provider_name
+
+            except Exception as e:
+                print(f"[Motivation] Provider {provider_name} gagal: {e}")
+                print("[Motivation] Beralih ke provider berikutnya...")
+                continue
+                
+        print("[Motivation] Semua provider API gagal! Beralih ke static fallback.")
         # Fallback statis terakhir agar user tidak mendapat respons kosong
         if target_label == predicted_label:
             return (
