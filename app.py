@@ -90,7 +90,7 @@ async def generate_motivation(hasil_latihan: dict) -> str:
     Membangkitkan kata-kata semangat berdasarkan hasil latihan suara user.
 
     Fallback Logic (sesuai System Rules):
-        1. Tembak LOCAL_VM_URL (Ollama di GCE VM) dengan timeout 5 detik.
+        1. Tembak LOCAL_VM_URL (Ollama di GCE VM) dengan timeout 30 detik.
         2. Jika timeout / error apapun  →  fallback ke Gemini API (cloud).
 
     Args:
@@ -121,7 +121,7 @@ async def generate_motivation(hasil_latihan: dict) -> str:
         )
 
     # ------------------------------------------------------------------
-    # LANGKAH 1 — Coba LOCAL_VM_URL (Ollama) dengan timeout 5 detik
+    # LANGKAH 1 — Coba LOCAL_VM_URL (Ollama) dengan timeout 30 detik
     # ------------------------------------------------------------------
     if LOCAL_VM_URL:
         try:
@@ -137,7 +137,7 @@ async def generate_motivation(hasil_latihan: dict) -> str:
                         "prompt": prompt,
                         "stream": False,
                     },
-                    timeout=5,  # batas 5 detik sesuai System Rules
+                    timeout=30,  # diperpanjang agar lebih sabar menunggu VM
                 ),
             )
             response.raise_for_status()
