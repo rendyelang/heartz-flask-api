@@ -180,7 +180,6 @@ def index():
 
 # 2. Endpoint Prediksi
 @app.route('/predict', methods=['POST'])
-@app.route('/predict', methods=['POST'])
 async def predict_audio(): 
     if 'audio' not in request.files:
         return jsonify({"error": "File audio tidak ditemukan"}), 400
