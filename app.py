@@ -1,5 +1,7 @@
 import os
+import asyncio
 import numpy as np
+import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import tensorflow as tf
@@ -56,11 +58,46 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-# Konfigurasi Gemini API
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-genai.configure(api_key=GEMINI_API_KEY)
+import random
 
-llm_model = genai.GenerativeModel('gemini-3.5-flash')
+# Konfigurasi Providers API (Shuffle Logic)
+API_PROVIDERS = []
+
+# 1. Native Gemini
+if os.getenv("GEMINI_API_KEY"):
+    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+    API_PROVIDERS.append({
+        "name": "gemini_native",
+        "type": "google_genai",
+        "instance": genai.GenerativeModel('gemini-3.5-flash')
+    })
+
+# 2. OpenRouter Grok
+if os.getenv("GROK_API_KEY"):
+    API_PROVIDERS.append({
+        "name": "openrouter_grok",
+        "type": "openrouter",
+        "key": os.getenv("GROK_API_KEY"),
+        "model": "x-ai/grok-4.3"
+    })
+
+# 3. OpenRouter Qwen
+if os.getenv("QWEN_API_KEY"):
+    API_PROVIDERS.append({
+        "name": "openrouter_qwen",
+        "type": "openrouter",
+        "key": os.getenv("QWEN_API_KEY"),
+        "model": "qwen/qwen-2.5-72b-instruct"
+    })
+
+# 4. OpenRouter Umum
+if os.getenv("OPENROUTER_API_KEY"):
+    API_PROVIDERS.append({
+        "name": "openrouter_default",
+        "type": "openrouter",
+        "key": os.getenv("OPENROUTER_API_KEY"),
+        "model": "deepseek/deepseek-v4-flash"
+    })
 
 # Load Model AI dengan mengenalkan Custom Layer-nya
 print("Memuat model Heartz...")
@@ -74,6 +111,107 @@ print("Model berhasil dimuat!")
 with open("labels.txt", "r") as f:
     class_names = [line.strip() for line in f.readlines()]
 
+
+# ==============================================================================
+# FUNGSI ASYNC: generate_motivation (System Rules — Fallback Logic)
+# ==============================================================================
+# Urutan: LOCAL_VM_URL (Ollama, timeout 5s) ──> GEMINI_API_KEY (cloud fallback)
+# ==============================================================================
+async def generate_motivation(hasil_latihan: dict) -> tuple:
+    """
+    Membangkitkan kata-kata semangat berdasarkan hasil latihan suara user.
+
+    Shuffle Logic:
+        Memilih salah satu API key dari API_PROVIDERS secara acak.
+        Jika provider terpilih gagal, mengembalikan fallback statis.
+
+    Args:
+        hasil_latihan: dict berisi minimal:
+            - "target_label" (str): suku kata yang ingin dilatih
+            - "predicted_label" (str): suku kata yang diprediksi, misal "ba"
+            - "confidence" (float): tingkat akurasi 0.0 – 1.0
+
+    Returns:
+        tuple: (pesan motivasi (str), sumber (str))
+    """
+
+    target_label = hasil_latihan.get("target_label", hasil_latihan["predicted_label"])
+    predicted_label = hasil_latihan["predicted_label"]
+    confidence = hasil_latihan["confidence"]
+
+    if target_label == predicted_label:
+        prompt = (
+            f"Seorang teman Tuli baru saja berhasil melafalkan suku kata '{target_label}' "
+            f"dengan tingkat akurasi {confidence * 100:.1f}%. Berikan satu kalimat "
+            f"singkat, ramah, dan memotivasi untuk memujinya."
+        )
+    else:
+        prompt = (
+            f"Seorang teman Tuli sedang berlatih melafalkan suku kata '{target_label}'. "
+            f"Namun, pelafalannya terdengar seperti '{predicted_label}' dengan tingkat kemiripan {confidence * 100:.1f}%. "
+            f"Berikan satu kalimat singkat, ramah, dan memotivasi untuk mengoreksinya dan menyemangatinya agar mencoba lagi."
+        )
+
+    if not API_PROVIDERS:
+        print("[Motivation] Tidak ada API Provider yang dikonfigurasi di .env!")
+    else:
+        # Acak urutan provider agar beban terdistribusi
+        providers_to_try = list(API_PROVIDERS)
+        random.shuffle(providers_to_try)
+        
+        for provider in providers_to_try:
+            provider_name = provider["name"]
+            print(f"[Motivation] Mencoba generate dengan provider: {provider_name}")
+
+            try:
+                loop = asyncio.get_event_loop()
+
+                if provider["type"] == "google_genai":
+                    llm = provider["instance"]
+                    response = await loop.run_in_executor(
+                        None,
+                        lambda p=provider: p["instance"].generate_content(prompt),
+                    )
+                    return response.text.strip(), provider_name
+
+                elif provider["type"] == "openrouter":
+                    def call_openrouter(p=provider):
+                        return requests.post(
+                            "https://openrouter.ai/api/v1/chat/completions",
+                            headers={
+                                "Authorization": f"Bearer {p['key']}",
+                            },
+                            json={
+                                "model": p["model"],
+                                "messages": [{"role": "user", "content": prompt}]
+                            },
+                            timeout=15
+                        )
+                    response = await loop.run_in_executor(None, call_openrouter)
+                    response.raise_for_status()
+                    data = response.json()
+                    motivation_text = data["choices"][0]["message"]["content"].strip()
+                    return motivation_text, provider_name
+
+            except Exception as e:
+                print(f"[Motivation] Provider {provider_name} gagal: {e}")
+                print("[Motivation] Beralih ke provider berikutnya...")
+                continue
+                
+        print("[Motivation] Semua provider API gagal! Beralih ke static fallback.")
+        # Fallback statis terakhir agar user tidak mendapat respons kosong
+        if target_label == predicted_label:
+            return (
+                f"Hebat! Kamu sudah berhasil mengucapkan '{target_label}' dengan sangat baik. "
+                f"Terus semangat, ya!"
+            ), "static_fallback"
+        else:
+            return (
+                f"Kamu sudah berani berlatih mengucapkan '{target_label}'. "
+                f"Masih terdengar seperti '{predicted_label}', tapi jangan menyerah ya! Ayo coba lagi!"
+            ), "static_fallback"
+
+
 # ==============================================================================
 # ENDPOINT API
 # ==============================================================================
@@ -85,10 +223,14 @@ def index():
 
 # 2. Endpoint Prediksi
 @app.route('/predict', methods=['POST'])
-def predict_audio():
+async def predict_audio(): 
     if 'audio' not in request.files:
         return jsonify({"error": "File audio tidak ditemukan"}), 400
         
+    if 'target_label' not in request.form:
+        return jsonify({"error": "Parameter target_label tidak ditemukan"}), 400
+        
+    target_label = request.form['target_label']
     file = request.files['audio']
     temp_path = "temp_inference.wav"
     
@@ -100,10 +242,14 @@ def predict_audio():
         predicted_index = int(np.argmax(predictions))
         predicted_label = class_names[predicted_index]
         confidence = float(predictions[predicted_index])
+
+        hasil_latihan = {
+            "target_label": target_label,
+            "predicted_label": predicted_label,
+            "confidence": confidence,
+        }
         
-        prompt = f"Seorang teman Tuli baru saja berlatih melafalkan suku kata '{predicted_label}' dengan tingkat akurasi {confidence * 100:.1f}%. Berikan satu kalimat singkat, ramah, dan memotivasi untuk menyemangatinya."
-        response = llm_model.generate_content(prompt)
-        motivation_text = response.text
+        motivation_text, motivation_source = await generate_motivation(hasil_latihan) 
         
         if os.path.exists(temp_path):
             os.remove(temp_path)
@@ -112,7 +258,8 @@ def predict_audio():
             "status": "success",
             "prediction": predicted_label,
             "confidence": confidence,
-            "motivation_message": motivation_text
+            "motivation_message": motivation_text,
+            "motivation_source": motivation_source
         }), 200
         
     except Exception as e:
