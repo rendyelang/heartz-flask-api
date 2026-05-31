@@ -95,6 +95,7 @@ async def generate_motivation(hasil_latihan: dict) -> str:
 
     Args:
         hasil_latihan: dict berisi minimal:
+            - "target_label" (str): suku kata yang ingin dilatih
             - "predicted_label" (str): suku kata yang diprediksi, misal "ba"
             - "confidence" (float): tingkat akurasi 0.0 – 1.0
 
@@ -102,15 +103,22 @@ async def generate_motivation(hasil_latihan: dict) -> str:
         str: satu kalimat motivasi yang ramah untuk user.
     """
 
+    target_label = hasil_latihan.get("target_label", hasil_latihan["predicted_label"])
     predicted_label = hasil_latihan["predicted_label"]
     confidence = hasil_latihan["confidence"]
 
-    prompt = (
-        f"Seorang teman Tuli baru saja berlatih melafalkan suku kata "
-        f"'{predicted_label}' dengan tingkat akurasi {confidence * 100:.1f}%. "
-        f"Berikan satu kalimat singkat, ramah, dan memotivasi untuk "
-        f"menyemangatinya."
-    )
+    if target_label == predicted_label:
+        prompt = (
+            f"Seorang teman Tuli baru saja berhasil melafalkan suku kata '{target_label}' "
+            f"dengan tingkat akurasi {confidence * 100:.1f}%. Berikan satu kalimat "
+            f"singkat, ramah, dan memotivasi untuk memujinya."
+        )
+    else:
+        prompt = (
+            f"Seorang teman Tuli sedang berlatih melafalkan suku kata '{target_label}'. "
+            f"Namun, pelafalannya terdengar seperti '{predicted_label}' dengan tingkat kemiripan {confidence * 100:.1f}%. "
+            f"Berikan satu kalimat singkat, ramah, dan memotivasi untuk mengoreksinya dan menyemangatinya agar mencoba lagi."
+        )
 
     # ------------------------------------------------------------------
     # LANGKAH 1 — Coba LOCAL_VM_URL (Ollama) dengan timeout 5 detik
@@ -163,10 +171,16 @@ async def generate_motivation(hasil_latihan: dict) -> str:
     except Exception as e:
         print(f"[Motivation] Gemini API juga gagal: {e}")
         # Fallback statis terakhir agar user tidak mendapat respons kosong
-        return (
-            f"Hebat! Kamu sudah berani berlatih mengucapkan '{predicted_label}'. "
-            f"Terus semangat, ya!"
-        )
+        if target_label == predicted_label:
+            return (
+                f"Hebat! Kamu sudah berhasil mengucapkan '{target_label}' dengan sangat baik. "
+                f"Terus semangat, ya!"
+            )
+        else:
+            return (
+                f"Kamu sudah berani berlatih mengucapkan '{target_label}'. "
+                f"Masih terdengar seperti '{predicted_label}', tapi jangan menyerah ya! Ayo coba lagi!"
+            )
 
 
 # ==============================================================================
@@ -184,6 +198,10 @@ async def predict_audio():
     if 'audio' not in request.files:
         return jsonify({"error": "File audio tidak ditemukan"}), 400
         
+    if 'target_label' not in request.form:
+        return jsonify({"error": "Parameter target_label tidak ditemukan"}), 400
+        
+    target_label = request.form['target_label']
     file = request.files['audio']
     temp_path = "temp_inference.wav"
     
@@ -197,6 +215,7 @@ async def predict_audio():
         confidence = float(predictions[predicted_index])
 
         hasil_latihan = {
+            "target_label": target_label,
             "predicted_label": predicted_label,
             "confidence": confidence,
         }
