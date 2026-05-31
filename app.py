@@ -85,7 +85,7 @@ with open("labels.txt", "r") as f:
 # ==============================================================================
 # Urutan: LOCAL_VM_URL (Ollama, timeout 5s) ──> GEMINI_API_KEY (cloud fallback)
 # ==============================================================================
-async def generate_motivation(hasil_latihan: dict) -> str:
+async def generate_motivation(hasil_latihan: dict) -> tuple:
     """
     Membangkitkan kata-kata semangat berdasarkan hasil latihan suara user.
 
@@ -100,7 +100,7 @@ async def generate_motivation(hasil_latihan: dict) -> str:
             - "confidence" (float): tingkat akurasi 0.0 – 1.0
 
     Returns:
-        str: satu kalimat motivasi yang ramah untuk user.
+        tuple: (pesan motivasi (str), sumber (str))
     """
 
     target_label = hasil_latihan.get("target_label", hasil_latihan["predicted_label"])
@@ -147,7 +147,7 @@ async def generate_motivation(hasil_latihan: dict) -> str:
             motivation_text = data.get("response", "").strip()
             if motivation_text:
                 print("[Motivation] Sumber: LOCAL_VM (Ollama)")
-                return motivation_text
+                return motivation_text, "local_vm"
 
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as net_err:
             print(f"[Motivation] Local VM timeout/koneksi gagal: {net_err}")
@@ -166,7 +166,7 @@ async def generate_motivation(hasil_latihan: dict) -> str:
         )
         motivation_text = gemini_response.text.strip()
         print("[Motivation] Sumber: GEMINI API (cloud fallback)")
-        return motivation_text
+        return motivation_text, "gemini_api"
 
     except Exception as e:
         print(f"[Motivation] Gemini API juga gagal: {e}")
@@ -175,12 +175,12 @@ async def generate_motivation(hasil_latihan: dict) -> str:
             return (
                 f"Hebat! Kamu sudah berhasil mengucapkan '{target_label}' dengan sangat baik. "
                 f"Terus semangat, ya!"
-            )
+            ), "static_fallback"
         else:
             return (
                 f"Kamu sudah berani berlatih mengucapkan '{target_label}'. "
                 f"Masih terdengar seperti '{predicted_label}', tapi jangan menyerah ya! Ayo coba lagi!"
-            )
+            ), "static_fallback"
 
 
 # ==============================================================================
@@ -220,7 +220,7 @@ async def predict_audio():
             "confidence": confidence,
         }
         
-        motivation_text = await generate_motivation(hasil_latihan) 
+        motivation_text, motivation_source = await generate_motivation(hasil_latihan) 
         
         if os.path.exists(temp_path):
             os.remove(temp_path)
@@ -229,7 +229,8 @@ async def predict_audio():
             "status": "success",
             "prediction": predicted_label,
             "confidence": confidence,
-            "motivation_message": motivation_text
+            "motivation_message": motivation_text,
+            "motivation_source": motivation_source
         }), 200
         
     except Exception as e:
