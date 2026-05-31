@@ -69,7 +69,7 @@ if os.getenv("GEMINI_API_KEY"):
     API_PROVIDERS.append({
         "name": "gemini_native",
         "type": "google_genai",
-        "instance": genai.GenerativeModel('gemini-1.5-flash')
+        "instance": genai.GenerativeModel('gemini-3.5-flash')
     })
 
 # 2. OpenRouter Grok
@@ -78,7 +78,7 @@ if os.getenv("GROK_API_KEY"):
         "name": "openrouter_grok",
         "type": "openrouter",
         "key": os.getenv("GROK_API_KEY"),
-        "model": "x-ai/grok-2-mini"
+        "model": "x-ai/grok-4.3"
     })
 
 # 3. OpenRouter Qwen
@@ -96,7 +96,7 @@ if os.getenv("OPENROUTER_API_KEY"):
         "name": "openrouter_default",
         "type": "openrouter",
         "key": os.getenv("OPENROUTER_API_KEY"),
-        "model": "google/gemini-1.5-flash"
+        "model": "deepseek/deepseek-v4-flash"
     })
 
 # Load Model AI dengan mengenalkan Custom Layer-nya
