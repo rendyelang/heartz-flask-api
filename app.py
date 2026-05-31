@@ -58,14 +58,46 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-# Konfigurasi Gemini API
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-genai.configure(api_key=GEMINI_API_KEY)
+import random
 
-llm_model = genai.GenerativeModel('gemini-3.5-flash')
+# Konfigurasi Providers API (Shuffle Logic)
+API_PROVIDERS = []
 
-# Konfigurasi Local VM (Ollama) — prioritas utama
-LOCAL_VM_URL = os.getenv("LOCAL_VM_URL")
+# 1. Native Gemini
+if os.getenv("GEMINI_API_KEY"):
+    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+    API_PROVIDERS.append({
+        "name": "gemini_native",
+        "type": "google_genai",
+        "instance": genai.GenerativeModel('gemini-3.5-flash')
+    })
+
+# 2. OpenRouter Grok
+if os.getenv("GROK_API_KEY"):
+    API_PROVIDERS.append({
+        "name": "openrouter_grok",
+        "type": "openrouter",
+        "key": os.getenv("GROK_API_KEY"),
+        "model": "x-ai/grok-2-mini"
+    })
+
+# 3. OpenRouter Qwen
+if os.getenv("QWEN_API_KEY"):
+    API_PROVIDERS.append({
+        "name": "openrouter_qwen",
+        "type": "openrouter",
+        "key": os.getenv("QWEN_API_KEY"),
+        "model": "qwen/qwen-2.5-72b-instruct"
+    })
+
+# 4. OpenRouter Umum
+if os.getenv("OPENROUTER_API_KEY"):
+    API_PROVIDERS.append({
+        "name": "openrouter_default",
+        "type": "openrouter",
+        "key": os.getenv("OPENROUTER_API_KEY"),
+        "model": "google/gemini-flash-1.5"
+    })
 
 # Load Model AI dengan mengenalkan Custom Layer-nya
 print("Memuat model Heartz...")
@@ -89,9 +121,9 @@ async def generate_motivation(hasil_latihan: dict) -> tuple:
     """
     Membangkitkan kata-kata semangat berdasarkan hasil latihan suara user.
 
-    Fallback Logic (sesuai System Rules):
-        1. Tembak LOCAL_VM_URL (Ollama di GCE VM) dengan timeout 30 detik.
-        2. Jika timeout / error apapun  →  fallback ke Gemini API (cloud).
+    Shuffle Logic:
+        Memilih salah satu API key dari API_PROVIDERS secara acak.
+        Jika provider terpilih gagal, mengembalikan fallback statis.
 
     Args:
         hasil_latihan: dict berisi minimal:
@@ -120,56 +152,46 @@ async def generate_motivation(hasil_latihan: dict) -> tuple:
             f"Berikan satu kalimat singkat, ramah, dan memotivasi untuk mengoreksinya dan menyemangatinya agar mencoba lagi."
         )
 
-    # ------------------------------------------------------------------
-    # LANGKAH 1 — Coba LOCAL_VM_URL (Ollama) dengan timeout 30 detik
-    # ------------------------------------------------------------------
-    if LOCAL_VM_URL:
+    if not API_PROVIDERS:
+        print("[Motivation] Tidak ada API Provider yang dikonfigurasi di .env!")
+    else:
+        # Pilih provider acak
+        provider = random.choice(API_PROVIDERS)
+        provider_name = provider["name"]
+        print(f"[Motivation] Mencoba generate dengan provider: {provider_name}")
+
         try:
-            # requests.post bersifat blocking, jalankan di thread pool
-            # agar tidak memblokir event loop asyncio.
             loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,  # default ThreadPoolExecutor
-                lambda: requests.post(
-                    LOCAL_VM_URL,
-                    json={
-                        "model": "gemma3:4b",
-                        "prompt": prompt,
-                        "stream": False,
-                    },
-                    timeout=30,  # diperpanjang agar lebih sabar menunggu VM
-                ),
-            )
-            response.raise_for_status()
-            data = response.json()
 
-            # Ollama mengembalikan field "response" untuk non-streaming
-            motivation_text = data.get("response", "").strip()
-            if motivation_text:
-                print("[Motivation] Sumber: LOCAL_VM (Ollama)")
-                return motivation_text, "local_vm"
+            if provider["type"] == "google_genai":
+                llm = provider["instance"]
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: llm.generate_content(prompt),
+                )
+                return response.text.strip(), provider_name
 
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as net_err:
-            print(f"[Motivation] Local VM timeout/koneksi gagal: {net_err}")
+            elif provider["type"] == "openrouter":
+                def call_openrouter():
+                    return requests.post(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {provider['key']}",
+                        },
+                        json={
+                            "model": provider["model"],
+                            "messages": [{"role": "user", "content": prompt}]
+                        },
+                        timeout=15
+                    )
+                response = await loop.run_in_executor(None, call_openrouter)
+                response.raise_for_status()
+                data = response.json()
+                motivation_text = data["choices"][0]["message"]["content"].strip()
+                return motivation_text, provider_name
+
         except Exception as e:
-            print(f"[Motivation] Local VM error tak terduga: {e}")
-
-    # ------------------------------------------------------------------
-    # LANGKAH 2 — Fallback ke Gemini API (cloud)
-    # ------------------------------------------------------------------
-    try:
-        # genai bersifat blocking; jalankan di thread pool juga
-        loop = asyncio.get_event_loop()
-        gemini_response = await loop.run_in_executor(
-            None,
-            lambda: llm_model.generate_content(prompt),
-        )
-        motivation_text = gemini_response.text.strip()
-        print("[Motivation] Sumber: GEMINI API (cloud fallback)")
-        return motivation_text, "gemini_api"
-
-    except Exception as e:
-        print(f"[Motivation] Gemini API juga gagal: {e}")
+            print(f"[Motivation] Provider {provider_name} gagal: {e}")
         # Fallback statis terakhir agar user tidak mendapat respons kosong
         if target_label == predicted_label:
             return (
