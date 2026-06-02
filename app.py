@@ -239,14 +239,21 @@ async def predict_audio():
         audio_batch, _ = clean_audio_for_inference(temp_path)
         
         predictions = model.predict(audio_batch)[0]
+        
+        # Predicted Label
         predicted_index = int(np.argmax(predictions))
         predicted_label = class_names[predicted_index]
-        confidence = float(predictions[predicted_index])
+        predicted_confidence = float(predictions[predicted_index])
+        
+        # Actual (Target) Label
+        actual_label = target_label
+        actual_index = class_names.index(actual_label) if actual_label in class_names else -1
+        actual_confidence = float(predictions[actual_index]) if actual_index != -1 else 0.0
 
         hasil_latihan = {
-            "target_label": target_label,
+            "target_label": actual_label,
             "predicted_label": predicted_label,
-            "confidence": confidence,
+            "confidence": predicted_confidence,
         }
         
         motivation_text, motivation_source = await generate_motivation(hasil_latihan) 
@@ -255,9 +262,11 @@ async def predict_audio():
             os.remove(temp_path)
             
         return jsonify({
-            "status": "success",
-            "prediction": predicted_label,
-            "confidence": confidence,
+            "is_match": predicted_label == actual_label,
+            "predicted_label": predicted_label,
+            "predicted_confidence": predicted_confidence,
+            "actual_label": actual_label,
+            "actual_confidence": actual_confidence,
             "motivation_message": motivation_text,
             "motivation_source": motivation_source
         }), 200
@@ -269,4 +278,4 @@ async def predict_audio():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
-    app.run(debug=False, host='0.0.0.0', port=port)
+    app.run(debug=True, host='0.0.0.0', port=port)
