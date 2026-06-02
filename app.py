@@ -1,5 +1,6 @@
 import os
 import asyncio
+import tempfile
 import numpy as np
 import requests
 from flask import Flask, request, jsonify
@@ -57,6 +58,12 @@ class MelSpectrogramLayer(tf.keras.layers.Layer):
 load_dotenv()
 app = Flask(__name__)
 CORS(app)
+
+# Batas maksimum ukuran upload: 5 MB
+app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024
+
+# Ekstensi audio yang diizinkan
+ALLOWED_EXTENSIONS = {'.wav', '.mp3', '.webm', '.ogg', '.m4a', '.flac'}
 
 import random
 
@@ -154,6 +161,9 @@ async def generate_motivation(hasil_latihan: dict) -> tuple:
 
     if not API_PROVIDERS:
         print("[Motivation] Tidak ada API Provider yang dikonfigurasi di .env!")
+        return (
+            f"Kamu hebat sudah berlatih mengucapkan '{target_label}'! Terus semangat, ya!"
+        ), "static_fallback_no_provider"
     else:
         # Acak urutan provider agar beban terdistribusi
         providers_to_try = list(API_PROVIDERS)
@@ -224,18 +234,38 @@ def index():
 # 2. Endpoint Prediksi
 @app.route('/predict', methods=['POST'])
 async def predict_audio(): 
+    # --- Input Validation ---
     if 'audio' not in request.files:
         return jsonify({"error": "File audio tidak ditemukan"}), 400
         
     if 'target_label' not in request.form:
         return jsonify({"error": "Parameter target_label tidak ditemukan"}), 400
-        
-    target_label = request.form['target_label']
-    file = request.files['audio']
-    temp_path = "temp_inference.wav"
     
+    target_label = request.form['target_label']
+    
+    # Validasi target_label ada dalam daftar label yang dikenali model
+    if target_label not in class_names:
+        return jsonify({
+            "error": f"target_label '{target_label}' tidak valid. Label yang tersedia: {class_names}"
+        }), 400
+    
+    file = request.files['audio']
+    
+    # Validasi ekstensi file audio
+    file_ext = os.path.splitext(file.filename)[1].lower() if file.filename else ''
+    if file_ext not in ALLOWED_EXTENSIONS:
+        return jsonify({
+            "error": f"Format file '{file_ext}' tidak didukung. Gunakan: {', '.join(ALLOWED_EXTENSIONS)}"
+        }), 400
+    
+    # --- Proses Prediksi (dengan temp file yang aman dari race condition) ---
+    temp_path = None
     try:
-        file.save(temp_path)
+        # Buat temp file unik per request (aman untuk concurrent requests)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            temp_path = tmp.name
+            file.save(temp_path)
+        
         audio_batch, _ = clean_audio_for_inference(temp_path)
         
         predictions = model.predict(audio_batch)[0]
@@ -247,8 +277,8 @@ async def predict_audio():
         
         # Actual (Target) Label
         actual_label = target_label
-        actual_index = class_names.index(actual_label) if actual_label in class_names else -1
-        actual_confidence = float(predictions[actual_index]) if actual_index != -1 else 0.0
+        actual_index = class_names.index(actual_label)
+        actual_confidence = float(predictions[actual_index])
 
         hasil_latihan = {
             "target_label": actual_label,
@@ -256,25 +286,25 @@ async def predict_audio():
             "confidence": predicted_confidence,
         }
         
-        motivation_text, motivation_source = await generate_motivation(hasil_latihan) 
-        
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        # motivation_text, motivation_source = await generate_motivation(hasil_latihan) 
             
         return jsonify({
             "is_match": predicted_label == actual_label,
             "predicted_label": predicted_label,
             "predicted_confidence": predicted_confidence,
             "actual_label": actual_label,
-            "actual_confidence": actual_confidence,
-            "motivation_message": motivation_text,
-            "motivation_source": motivation_source
+            "actual_confidence": actual_confidence
+            # "motivation_message": motivation_text,
+            # "motivation_source": motivation_source
         }), 200
         
     except Exception as e:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
         return jsonify({"error": str(e)}), 500
+        
+    finally:
+        # Cleanup temp file — selalu dijalankan, baik sukses maupun error
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))

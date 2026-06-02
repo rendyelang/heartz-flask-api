@@ -20,5 +20,5 @@ COPY . .
 # Set environment variable untuk Flask port (Cloud Run mewajibkan port dinamis via env)
 ENV PORT 8080
 
-# Jalankan server menggunakan Gunicorn (Standar Production agar Flask lu stabil)
-CMD exec gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 0 app:app
+# Jalankan server menggunakan Gunicorn + Uvicorn worker (Native Async Support)
+CMD exec gunicorn -k uvicorn.workers.UvicornWorker --bind :$PORT --workers 1 --timeout 0 app:app
